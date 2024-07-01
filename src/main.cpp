@@ -1,104 +1,78 @@
 #include <Arduino.h>
 #include <heltec_unofficial.h>
 #include <Wire.h>
+#include <Adafruit_AMG88xx.h>
 
-const int I2C_SDA = 41;
-const int I2C_SCL = 42;
-const uint8_t I2C_ADDRESS = 0x69;
-
-const uint8_t REG_POWER_CONTROL = 0x00;
-const uint8_t REG_RESET = 0x01;
-const uint8_t REG_FRAME_RATE = 0x02;
-const uint8_t REG_INT_CONTROL = 0x03;
-const uint8_t REG_STATUS = 0x04;
-const uint8_t REG_STATUS_CLEAR = 0x05;
-const uint8_t REG_TEMP = 0x80;
-
-const uint8_t CMD_NORMAL_MODE[] = { 0x00, 0x00 };
-const uint8_t CMD_INITIAL_RESET[] = { 0x01, 0x3f };
-const uint8_t CMD_DISABLE_INT[] = { 0x03, 0x00 };
-const uint8_t CMD_SET_FRAMERATE_1[] = { 0x02, 0x01 };
-const uint8_t CMD_READ_TEMPS[] = { 0x80 };
-
-
-#define send_command(cmd)             \
-  Wire.beginTransmission(I2C_ADDRESS);  \
-  Wire.write(cmd, sizeof cmd);        \
-  Wire.endTransmission()
-
-void IR_init();
-void IR_read_temps(float buf[64]);
-void IR_read_reg(uint8_t reg, size_t nbytes, char buf[]);
-void hang();
-
-void setup() {
-  heltec_setup();
-  IR_init();
-}
+const int I2C_SDA = GPIO_NUM_41;
+const int I2C_SCL = GPIO_NUM_42;
+uint8_t I2C_ADDRESS;
+Adafruit_AMG88xx amg;
 
 uint32_t last_loop = 0;
+float pixels[AMG88xx_PIXEL_ARRAY_SIZE];
+
+void hang();
+void find_IR_I2C_addr();
+
+void setup() {
+    heltec_setup();
+    delay(200);
+    Serial.println(F("AMG88xx test"));
+
+    bool status;
+
+    Wire.begin(I2C_SDA, I2C_SCL);
+
+    find_IR_I2C_addr();
+
+    status = amg.begin(I2C_ADDRESS);
+    if (!status) {
+        both.println("No valid sensor");
+        hang();
+    }
+    amg.disableInterrupt();
+    amg.setMovingAverageMode(false);
+    delay(100); // let sensor boot up
+}
 
 void loop() {
   heltec_loop();
 
-  uint32_t current_time = millis();
-  if (current_time - last_loop < 1000) {
+  if (millis() - last_loop < 1000)
     return;
-  }
-  last_loop = current_time;
+  last_loop = millis(); 
 
-  float temps[64];
-  IR_read_temps(temps);
-  for (size_t y = 0; y < 8; y++) {
-    String line;
-    for (size_t x = 0; x < 8; x++) {
-      line.concat(temps[y*8 + x]);
-      line += " ";
-    }
-    Serial.println(line);
+  Serial.print("Thermistor Temperature = ");
+  Serial.print(amg.readThermistor());
+  Serial.println(" ˚C");
+
+  memset(pixels, 69, AMG88xx_PIXEL_ARRAY_SIZE);
+  amg.readPixels(pixels);
+
+  for(int i=1; i <= AMG88xx_PIXEL_ARRAY_SIZE; i++){
+    Serial.print(pixels[i-1]);
+    Serial.print(", ");
+    if( i%8 == 0 ) Serial.println();
   }
+
+  Serial.println();
 }
 
-void IR_init() {
-  Wire.setPins(I2C_SDA, I2C_SCL);
-  Wire.begin();
-  digitalWrite(I2C_SDA, HIGH);
-  digitalWrite(I2C_SCL, HIGH);
-
-  send_command(CMD_NORMAL_MODE);
-  send_command(CMD_INITIAL_RESET);
-  send_command(CMD_DISABLE_INT);
-  send_command(CMD_SET_FRAMERATE_1);
-
-  delay(2000);
-}
-
-void IR_read_reg(uint8_t reg, size_t nbytes, void *buf) {
-  uint8_t cmd[] = { reg };
-  send_command(cmd);
-  Wire.requestFrom(I2C_ADDRESS, nbytes);
-
-  size_t i = 0;
-  for (; i < nbytes && Wire.available(); i++) {
-    ((uint8_t *)buf)[i] = Wire.read();
-  }
-  if (i != nbytes) {
-    Serial.println("IR_read_reg recieved fewer bytes than expected");
-    hang();
-  }
-}
-
-void IR_read_temps(float buf[64]) {
-  short raw_buf[64];
-  IR_read_reg(REG_TEMP, 128, raw_buf);
-  for (size_t y = 0; y < 8; y++) {
-    for (size_t x = 0; x < 8; x++) {
-      buf[y*8 + x] = (float)raw_buf[y*8 + x] * 0.25; 
+void find_IR_I2C_addr() {
+  const uint8_t cmd[] = {  };
+  for (I2C_ADDRESS = 0x00; I2C_ADDRESS <= 0xff; I2C_ADDRESS++) {
+    Wire.beginTransmission(I2C_ADDRESS);
+    Wire.write(cmd, sizeof cmd);
+    if (Wire.endTransmission() == 0) {
+      both.printf("i2c addr: %x\n", I2C_ADDRESS);
+      return;
     }
   }
+  both.println("I2C NACK");
+  hang();
 }
 
 void hang() { 
-    both.println("Hanged");
-    while (true) { heltec_loop(); }
-  }
+  both.println("Hanged");
+  while (true) { heltec_loop(); }
+}
