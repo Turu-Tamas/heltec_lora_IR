@@ -15,24 +15,36 @@ const uint8_t REG_STATUS_CLEAR = 0x05;
 const uint8_t REG_TEMP = 0x80;
 
 const uint8_t CMD_NORMAL_MODE[] = { 0x00, 0x00 };
+const uint8_t CMD_SLEEP_MODE[] = { 0x00, 0x10 };
+const uint8_t CMD_FLAG_RESET[] = { 0x01, 0x30 };
 const uint8_t CMD_INITIAL_RESET[] = { 0x01, 0x3f };
-const uint8_t CMD_DISABLE_INT[] = { 0x03, 0x00 };
 const uint8_t CMD_SET_FRAMERATE_1[] = { 0x02, 0x01 };
+const uint8_t CMD_SET_FRAMERATE_10[] = { 0x02, 0x00 };
+const uint8_t CMD_DISABLE_INT[] = { 0x03, 0x00 };
 const uint8_t CMD_READ_TEMPS[] = { 0x80 };
 
+#define send_command_nostop(cmd) \
+  Wire.beginTransmission(I2C_ADDRESS);  \
+  Wire.write(cmd, sizeof cmd);        \
+  IR_debug(Wire.endTransmission(false), __LINE__); \
 
 #define send_command(cmd)             \
   Wire.beginTransmission(I2C_ADDRESS);  \
   Wire.write(cmd, sizeof cmd);        \
-  Wire.endTransmission()
+  IR_debug(Wire.endTransmission(), __LINE__); \
 
 void IR_init();
 void IR_read_temps(float buf[64]);
 void IR_read_reg(uint8_t reg, size_t nbytes, char buf[]);
 void hang();
+void IR_debug(u8_t res, int line);
+void I2C_reset();
 
 void setup() {
   heltec_setup();
+  while (!Serial.available()) {  }
+  delay(100);
+  both.println("Start");
   IR_init();
 }
 
@@ -57,33 +69,33 @@ void loop() {
     }
     Serial.println(line);
   }
+  Serial.println();
 }
 
 void IR_init() {
-  Wire.setPins(I2C_SDA, I2C_SCL);
-  Wire.begin();
+  I2C_reset();
+  Wire.begin(I2C_SDA, I2C_SCL, 400*1000);
   digitalWrite(I2C_SDA, HIGH);
   digitalWrite(I2C_SCL, HIGH);
+  // Wire.setTimeOut(1000);
 
   send_command(CMD_NORMAL_MODE);
   send_command(CMD_INITIAL_RESET);
+  // send_command(CMD_FLAG_RESET);
   send_command(CMD_DISABLE_INT);
-  send_command(CMD_SET_FRAMERATE_1);
-
-  delay(2000);
+  send_command(CMD_SET_FRAMERATE_10);
 }
 
 void IR_read_reg(uint8_t reg, size_t nbytes, void *buf) {
-  uint8_t cmd[] = { reg };
-  send_command(cmd);
-  Wire.requestFrom(I2C_ADDRESS, nbytes);
 
-  size_t i = 0;
-  for (; i < nbytes && Wire.available(); i++) {
-    ((uint8_t *)buf)[i] = Wire.read();
-  }
-  if (i != nbytes) {
-    Serial.println("IR_read_reg recieved fewer bytes than expected");
+  memset(buf, 69, nbytes);
+
+  uint8_t cmd[] = { reg };
+  send_command_nostop(cmd);
+  Wire.requestFrom(I2C_ADDRESS, nbytes);
+  size_t n = Wire.readBytes((u8_t *)buf, nbytes);
+  if (n != nbytes) {
+    both.printf("IR_read_reg recieved %u, expected %u", n, nbytes);
     hang();
   }
 }
@@ -99,6 +111,58 @@ void IR_read_temps(float buf[64]) {
 }
 
 void hang() { 
-    both.println("Hanged");
-    while (true) { heltec_loop(); }
+  both.println("Hanged");
+  while (true) { heltec_loop(); }
+}
+
+void IR_debug(u8_t res, int line) {
+  switch (res)
+  {
+  case 0:
+    return;
+    break;
+  case 1:
+    both.printf("%i: I2C: data too long", line);
+    break;
+  case 2:
+    both.printf("%i: I2C: address NACK", line);
+    break;
+  case 3:
+    both.printf("%i: I2C: data NACK", line);
+    break;
+  case 4:
+    both.printf("%i: I2C: other err", line);
+    break;
+  case 5:
+    both.printf("%i: I2C: timed out", line);
+    break;
+  default:
+    both.printf("%i: I2C: invalid result value", line);
+    break;
   }
+  both.println();
+  hang();
+}
+
+void I2C_reset() {
+  const int delay_time = 5;
+
+  pinMode(I2C_SDA, OUTPUT);
+  pinMode(I2C_SCL, OUTPUT);
+
+  digitalWrite(I2C_SDA, HIGH);
+  digitalWrite(I2C_SCL, HIGH);
+
+  for (int i = 0; i < 10; i++) {
+    digitalWrite(I2C_SCL, LOW);
+    delayMicroseconds(delay_time);
+    digitalWrite(I2C_SCL, HIGH);
+    delayMicroseconds(delay_time);
+  }
+
+  digitalWrite(I2C_SDA, LOW);
+  delayMicroseconds(delay_time);
+  digitalWrite(I2C_SDA, HIGH);
+
+  delay(1000);
+}
