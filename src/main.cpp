@@ -15,24 +15,24 @@ void hang();
 void find_IR_I2C_addr();
 
 void setup() {
-    heltec_setup();
-    delay(200);
-    Serial.println(F("AMG88xx test"));
+  heltec_setup();
+  delay(4000);
+  Serial.println(F("AMG88xx test"));
 
-    bool status;
+  bool status;
 
-    Wire.begin(I2C_SDA, I2C_SCL);
+  Wire.begin(I2C_SDA, I2C_SCL, 400*1000);
 
-    find_IR_I2C_addr();
+  find_IR_I2C_addr();
 
-    status = amg.begin(I2C_ADDRESS);
-    if (!status) {
-        both.println("No valid sensor");
-        hang();
-    }
-    amg.disableInterrupt();
-    amg.setMovingAverageMode(false);
-    delay(100); // let sensor boot up
+  status = amg.begin(I2C_ADDRESS);
+  if (!status) {
+      both.println("No valid sensor");
+      hang();
+  }
+  amg.disableInterrupt();
+  amg.setMovingAverageMode(false);
+  delay(100); // let sensor boot up
 }
 
 void loop() {
@@ -59,13 +59,16 @@ void loop() {
 }
 
 void find_IR_I2C_addr() {
-  const uint8_t cmd[] = {  };
-  for (I2C_ADDRESS = 0x00; I2C_ADDRESS <= 0xff; I2C_ADDRESS++) {
+  byte mask = 0b1111000;
+  for (I2C_ADDRESS = 0x00; I2C_ADDRESS < 0xff; I2C_ADDRESS++) {
+    // if ((I2C_ADDRESS & mask) == 0 || (I2C_ADDRESS & mask) == mask)
+    //   continue;
+
+    Serial.printf("Checking addr: %2x\n", I2C_ADDRESS);
     Wire.beginTransmission(I2C_ADDRESS);
-    Wire.write(cmd, sizeof cmd);
     if (Wire.endTransmission() == 0) {
       both.printf("i2c addr: %x\n", I2C_ADDRESS);
-      return;
+      // return;
     }
   }
   both.println("I2C NACK");
