@@ -1,9 +1,8 @@
 #include <Arduino.h>
 #include <heltec_unofficial.h>
-#include <Wire.h>
+#include <SoftWire.h>
+#include "AsyncDelay.h"
 
-const int I2C_SDA = 41;
-const int I2C_SCL = 42;
 const uint8_t I2C_ADDRESS = 0x69;
 
 const uint8_t REG_POWER_CONTROL = 0x00;
@@ -23,15 +22,21 @@ const uint8_t CMD_SET_FRAMERATE_10[] = { 0x02, 0x00 };
 const uint8_t CMD_DISABLE_INT[] = { 0x03, 0x00 };
 const uint8_t CMD_READ_TEMPS[] = { 0x80 };
 
+byte softWireRxBuffer[128];
+byte softWireTxBuffer[4];
+SoftWire AMG8833(GPIO_NUM_42, GPIO_NUM_41);
+
+AsyncDelay loopInterval(1000, AsyncDelay::units_t::MILLIS);
+
 #define send_command_nostop(cmd) \
-  Wire.beginTransmission(I2C_ADDRESS);  \
-  Wire.write(cmd, sizeof cmd);        \
-  IR_debug(Wire.endTransmission(false), __LINE__); \
+  AMG8833.beginTransmission(I2C_ADDRESS);  \
+  AMG8833.write(cmd, sizeof cmd);        \
+  IR_debug(AMG8833.endTransmission(false), __LINE__); \
 
 #define send_command(cmd)             \
-  Wire.beginTransmission(I2C_ADDRESS);  \
-  Wire.write(cmd, sizeof cmd);        \
-  IR_debug(Wire.endTransmission(), __LINE__); \
+  AMG8833.beginTransmission(I2C_ADDRESS);  \
+  AMG8833.write(cmd, sizeof cmd);        \
+  IR_debug(AMG8833.endTransmission(), __LINE__); \
 
 void IR_init();
 void IR_read_temps(float buf[64]);
@@ -42,8 +47,7 @@ void I2C_reset();
 
 void setup() {
   heltec_setup();
-  while (!Serial.available()) {  }
-  delay(100);
+  delay(8000);
   both.println("Start");
   IR_init();
 }
@@ -53,11 +57,9 @@ uint32_t last_loop = 0;
 void loop() {
   heltec_loop();
 
-  uint32_t current_time = millis();
-  if (current_time - last_loop < 1000) {
+  if (!loopInterval.isExpired())
     return;
-  }
-  last_loop = current_time;
+  loopInterval.restart();
 
   float temps[64];
   IR_read_temps(temps);
@@ -73,11 +75,17 @@ void loop() {
 }
 
 void IR_init() {
+  SDA; SCL;
+  AMG8833.setDelay_us(5);
+  AMG8833.setRxBuffer(softWireRxBuffer, sizeof softWireRxBuffer);
+  AMG8833.setTxBuffer(softWireTxBuffer, sizeof softWireTxBuffer);
+  // AMG8833.setTimeout(1000);
+  AMG8833.enablePullups();
+  AMG8833.begin();
+
+  AMG8833.sclHigh();
+  AMG8833.sdaHigh();
   I2C_reset();
-  Wire.begin(I2C_SDA, I2C_SCL, 400*1000);
-  digitalWrite(I2C_SDA, HIGH);
-  digitalWrite(I2C_SCL, HIGH);
-  // Wire.setTimeOut(1000);
 
   send_command(CMD_NORMAL_MODE);
   send_command(CMD_INITIAL_RESET);
@@ -92,10 +100,10 @@ void IR_read_reg(uint8_t reg, size_t nbytes, void *buf) {
 
   uint8_t cmd[] = { reg };
   send_command_nostop(cmd);
-  Wire.requestFrom(I2C_ADDRESS, nbytes);
-  size_t n = Wire.readBytes((u8_t *)buf, nbytes);
-  if (n != nbytes) {
-    both.printf("IR_read_reg recieved %u, expected %u", n, nbytes);
+  AMG8833.requestFrom(I2C_ADDRESS, nbytes);
+  size_t num_read = AMG8833.readBytes((u8_t *)buf, nbytes);
+  if (num_read != nbytes) {
+    both.printf("IR_read_reg recieved %u, expected %u", num_read, nbytes);
     hang();
   }
 }
@@ -131,11 +139,14 @@ void IR_debug(u8_t res, int line) {
     both.printf("%i: I2C: data NACK", line);
     break;
   case 4:
-    both.printf("%i: I2C: other err", line);
-    break;
-  case 5:
     both.printf("%i: I2C: timed out", line);
     break;
+  // case 4:
+  //   both.printf("%i: I2C: other err", line);
+  //   break;
+  // case 5:
+  //   both.printf("%i: I2C: timed out", line);
+  //   break;
   default:
     both.printf("%i: I2C: invalid result value", line);
     break;
@@ -145,24 +156,15 @@ void IR_debug(u8_t res, int line) {
 }
 
 void I2C_reset() {
-  const int delay_time = 5;
-
-  pinMode(I2C_SDA, OUTPUT);
-  pinMode(I2C_SCL, OUTPUT);
-
-  digitalWrite(I2C_SDA, HIGH);
-  digitalWrite(I2C_SCL, HIGH);
+  AMG8833.sclHigh();
+  AMG8833.sdaHigh();
 
   for (int i = 0; i < 10; i++) {
-    digitalWrite(I2C_SCL, LOW);
-    delayMicroseconds(delay_time);
-    digitalWrite(I2C_SCL, HIGH);
-    delayMicroseconds(delay_time);
+    delayMicroseconds(AMG8833.getDelay_us());
+    AMG8833.sclLow();
+    delayMicroseconds(AMG8833.getDelay_us());
+    AMG8833.sclHigh();
   }
 
-  digitalWrite(I2C_SDA, LOW);
-  delayMicroseconds(delay_time);
-  digitalWrite(I2C_SDA, HIGH);
-
-  delay(1000);
+  AMG8833.stop();
 }
