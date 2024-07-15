@@ -2,8 +2,6 @@
 #include <heltec_unofficial.h>
 #include <Wire.h>
 
-const int I2C_SDA = 41;
-const int I2C_SCL = 42;
 const uint8_t I2C_ADDRESS = 0x69;
 
 const uint8_t REG_POWER_CONTROL = 0x00;
@@ -74,9 +72,9 @@ void loop() {
 
 void IR_init() {
   I2C_reset();
-  Wire.begin(I2C_SDA, I2C_SCL, 400*1000);
-  digitalWrite(I2C_SDA, HIGH);
-  digitalWrite(I2C_SCL, HIGH);
+  Wire.begin(SDA, SCL, 400*1000);
+  digitalWrite(SDA, HIGH);
+  digitalWrite(SCL, HIGH);
   // Wire.setTimeOut(1000);
 
   send_command(CMD_NORMAL_MODE);
@@ -147,22 +145,22 @@ void IR_debug(u8_t res, int line) {
 void I2C_reset() {
   const int delay_time = 5;
 
-  pinMode(I2C_SDA, OUTPUT);
-  pinMode(I2C_SCL, OUTPUT);
+  pinMode(SDA, OUTPUT);
+  pinMode(SCL, OUTPUT);
 
-  digitalWrite(I2C_SDA, HIGH);
-  digitalWrite(I2C_SCL, HIGH);
+  digitalWrite(SDA, HIGH);
+  digitalWrite(SCL, HIGH);
 
   for (int i = 0; i < 10; i++) {
-    digitalWrite(I2C_SCL, LOW);
+    digitalWrite(SCL, LOW);
     delayMicroseconds(delay_time);
-    digitalWrite(I2C_SCL, HIGH);
+    digitalWrite(SCL, HIGH);
     delayMicroseconds(delay_time);
   }
 
-  digitalWrite(I2C_SDA, LOW);
+  digitalWrite(SDA, LOW);
   delayMicroseconds(delay_time);
-  digitalWrite(I2C_SDA, HIGH);
+  digitalWrite(SDA, HIGH);
 
   delay(1000);
 }
