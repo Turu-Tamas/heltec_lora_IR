@@ -22,8 +22,8 @@ const int IR_READ_INTERVAL = 300 * MILLISEC;
 const int UPLOAD_INTERVAL = 20 * SECOND;
 const bool SLEEP_IR_SENSOR = IR_READ_INTERVAL > 3 * SECOND;
 const int HUMAN_TEMP = 27.5 * CELSIUS;
-const int IR_AVG_MINVAL = 20 * CELSIUS;
-const int IR_AVG_MAXVAL = 32 * CELSIUS;
+const int IR_MINVAL = 20 * CELSIUS;
+const int IR_MAXVAL = 32 * CELSIUS;
 const int IR_READS_PER_SD_WRITE = 30;
 u8_t IR_READ_BUFFER[IR_READS_PER_SD_WRITE * 64];
 
@@ -34,6 +34,7 @@ u64_t temp_totals[64] = { 0 };
 u64_t IR_num_reads = 0;
 
 const bool DEBUG_LORA_DUTY_CYCLE = false;
+const bool DEBUG_SD = true;
 
 LoRaWANNode* node;
 SDClass SD_card;
@@ -175,7 +176,10 @@ bool IR_read(void *arg) {
       num_above += temps[i] > HUMAN_TEMP;
     }
 
-    Serial.printf("min %i, max %i, avg %i, num: %i\n", min_tmp, max_tmp, sum / 64, num_above);
+    Serial.printf(
+      "min %i, max %i, avg %i, num: %i\n",
+      min_tmp, max_tmp, sum / 64, num_above
+    );
   }
   return true;
 }
@@ -184,14 +188,14 @@ bool IR_read(void *arg) {
 // and 255 corresponding to maxval and a linear relationship in between
 u8_t temp2u8(u16_t inval) {
   u16_t out = inval; // [SHORTMIN, SHORTMAX]
-  out = max(out, (u16_t)(IR_AVG_MINVAL * IR_num_reads));
-  out = min(out, (u16_t)(IR_AVG_MAXVAL * IR_num_reads));
+  out = max(out, (u16_t)(IR_MINVAL * IR_num_reads));
+  out = min(out, (u16_t)(IR_MAXVAL * IR_num_reads));
   // [minval, maxval]
-  out -= IR_AVG_MINVAL * IR_num_reads;
+  out -= IR_MINVAL * IR_num_reads;
 
   // always multiply first
   out *= 255;
-  out /= IR_AVG_MAXVAL - IR_AVG_MINVAL;
+  out /= IR_MAXVAL - IR_MINVAL;
   out /= IR_num_reads;
   // [0; 255], voilá
   return out;
@@ -235,11 +239,13 @@ void write_SD() {
   }
   file.close();
 
-  byte buf[sizeof(IR_READ_BUFFER)];
-  file = SD_card.open(filename, FILE_READ);
-  file.readBytes(buf, sizeof(buf));
-  for (int i = 0; i < sizeof(IR_READ_BUFFER); i++) {
-    assert(IR_READ_BUFFER[i] == buf[i]);
+  if (DEBUG_SD) {
+    byte buf[sizeof(IR_READ_BUFFER)];
+    file = SD_card.open(filename, FILE_READ);
+    file.readBytes(buf, sizeof(buf));
+    for (int i = 0; i < sizeof(IR_READ_BUFFER); i++) {
+      assert(IR_READ_BUFFER[i] == buf[i]);
+    }
+    file.close();
   }
-  file.close();
 }

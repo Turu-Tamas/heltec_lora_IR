@@ -3,6 +3,7 @@
         "sstream": "cpp",
         "amg8833.h": "c",
         "wire.h": "c",
-        "*.tcc": "cpp"
+        "*.tcc": "cpp",
+        "limits": "cpp"
     }
 }
