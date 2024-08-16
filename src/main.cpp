@@ -1,81 +1,245 @@
+#define RADIOLIB_DEBUG_PROTOCOL 1
+
 #include <Arduino.h>
 #include <heltec_unofficial.h>
 #include <Wire.h>
-#include <Adafruit_AMG88xx.h>
+#include "AMG8833.h"
+#include <LoRaWAN_ESP32.h>
+#include <arduino-timer.h>
+#include "config.h"
+#include <limits>
+#include <SD.h>
 
-const int I2C_SDA = GPIO_NUM_41;
-const int I2C_SCL = GPIO_NUM_42;
-uint8_t I2C_ADDRESS;
-Adafruit_AMG88xx amg;
+#define DBG_NO_LORA 0
 
-uint32_t last_loop = 0;
-float pixels[AMG88xx_PIXEL_ARRAY_SIZE];
+const int MILLISEC = 1;
+const int SECOND = 1000 * MILLISEC;
+const int MINUTE = 60 * SECOND;
+const int HOUR = 60 * MINUTE;
+const int CELSIUS = 4;
+
+const int IR_READ_INTERVAL = 300 * MILLISEC;
+const int UPLOAD_INTERVAL = 20 * SECOND;
+const bool SLEEP_IR_SENSOR = IR_READ_INTERVAL > 3 * SECOND;
+const int HUMAN_TEMP = 27.5 * CELSIUS;
+const int IR_AVG_MINVAL = 20 * CELSIUS;
+const int IR_AVG_MAXVAL = 32 * CELSIUS;
+const int IR_READS_PER_SD_WRITE = 30;
+u8_t IR_READ_BUFFER[IR_READS_PER_SD_WRITE * 64];
+
+const int IR_I2C_ADDR = 0xe9;
+AMG8833 IR_sensor(&Wire1, SDA, SCL, IR_I2C_ADDR);
+
+u64_t temp_totals[64] = { 0 };
+u64_t IR_num_reads = 0;
+
+const bool DEBUG_LORA_DUTY_CYCLE = false;
+
+LoRaWANNode* node;
+SDClass SD_card;
+
+auto upload_timer = timer_create_default();
+auto IR_read_timer = timer_create_default();
 
 void hang();
-void find_IR_I2C_addr();
+bool upload(void *arg);
+bool IR_read(void *arg);
+void setup_lora();
+u8_t temp2u8(u16_t inval);
+void write_SD();
+
+typedef AMG8833_error_t Error;
+#define IR_command(command)         \
+  do {                              \
+    Error err = command;            \
+    if (err) {                      \
+      both.println("IR error:");    \
+      both.println(err.str());      \
+      delay(100);                   \
+    }                               \
+    else break;                     \
+  } while (true)                    \
+
+enum SensorErrorType {
+  SENSOR_ERROR_NONE,
+  SENSOR_SD_CARD_WRITE_ERROR,
+  SENSOR_IR_READ_ERROR,
+  SENSOR_SD_CARD_SETUP_ERROR,
+  SENSOR_IR_SETUP_ERROR,
+};
+
+SensorErrorType error = SENSOR_ERROR_NONE;
 
 void setup() {
+
+  u32_t start_time = millis();
+
   heltec_setup();
-  delay(4000);
-  Serial.println(F("AMG88xx test"));
+  delay(6000);
+  both.println("start");
 
-  bool status;
-
-  Wire.begin(I2C_SDA, I2C_SCL, 400*1000);
-
-  find_IR_I2C_addr();
-
-  status = amg.begin(I2C_ADDRESS);
-  if (!status) {
-      both.println("No valid sensor");
-      hang();
+  if (!SD_card.begin(SPI_CS1_GPIO_NUM)) {
+    both.println("SD card begin failed");
+    error = SENSOR_SD_CARD_SETUP_ERROR;
+    hang();
   }
-  amg.disableInterrupt();
-  amg.setMovingAverageMode(false);
-  delay(100); // let sensor boot up
+
+  IR_command(IR_sensor.begin());
+  assert(IR_READ_INTERVAL >= 100);
+
+  if (IR_READ_INTERVAL >= 1000)
+    IR_command(IR_sensor.set_framerate(FPS1));
+  else
+    IR_command(IR_sensor.set_framerate(FPS10));
+
+  #if !DBG_NO_LORA
+    setup_lora();
+  #endif
+
+  upload_timer.every(UPLOAD_INTERVAL, upload);
+  IR_read_timer.every(IR_READ_INTERVAL, IR_read);
 }
 
 void loop() {
   heltec_loop();
-
-  if (millis() - last_loop < 1000)
-    return;
-  last_loop = millis(); 
-
-  Serial.print("Thermistor Temperature = ");
-  Serial.print(amg.readThermistor());
-  Serial.println(" ˚C");
-
-  memset(pixels, 69, AMG88xx_PIXEL_ARRAY_SIZE);
-  amg.readPixels(pixels);
-
-  for(int i=1; i <= AMG88xx_PIXEL_ARRAY_SIZE; i++){
-    Serial.print(pixels[i-1]);
-    Serial.print(", ");
-    if( i%8 == 0 ) Serial.println();
+  upload_timer.tick();
+  IR_read_timer.tick();
+  if (IR_num_reads == IR_READS_PER_SD_WRITE) {
+    write_SD();
+    IR_num_reads = 0;
   }
-
-  Serial.println();
 }
 
-void find_IR_I2C_addr() {
-  byte mask = 0b1111000;
-  for (I2C_ADDRESS = 0x00; I2C_ADDRESS < 0xff; I2C_ADDRESS++) {
-    // if ((I2C_ADDRESS & mask) == 0 || (I2C_ADDRESS & mask) == mask)
-    //   continue;
-
-    Serial.printf("Checking addr: %2x\n", I2C_ADDRESS);
-    Wire.beginTransmission(I2C_ADDRESS);
-    if (Wire.endTransmission() == 0) {
-      both.printf("i2c addr: %x\n", I2C_ADDRESS);
-      // return;
-    }
-  }
-  both.println("I2C NACK");
-  hang();
+bool upload_error(void *_) {
+  byte msg[1] = { error };
+  RADIOLIB(node->sendReceive(msg, 1));
+  return true;
 }
 
-void hang() { 
+void hang() {
   both.println("Hanged");
-  while (true) { heltec_loop(); }
+  auto error_upload_timer = timer_create_default();
+  error_upload_timer.every(UPLOAD_INTERVAL, upload_error);
+  while (true) {
+    heltec_loop();
+    error_upload_timer.tick();
+  }
+}
+
+void setup_lora() {
+  // initialize radio
+  Serial.println("Radio init");
+  int16_t state = radio.begin();
+  if (state != RADIOLIB_ERR_NONE) {
+    both.println("Radio did not initialize.");
+    hang();
+  }
+
+  if (!persist.isProvisioned())
+    persist.provision();
+
+  node = persist.manage(&radio);
+
+  RADIOLIB(node->setTxPower(EU868.powerMax));
+  while (!node->isActivated()) {
+    Serial.println("joining");
+    RADIOLIB(node->activateOTAA());
+  }
+  both.println("Successfully joined");
+  node->setDutyCycle(DEBUG_LORA_DUTY_CYCLE);
+}
+
+bool IR_read(void *arg) {
+  short temps[64];
+  Error err = IR_sensor.read_pixels_raw(temps);
+  // return false; would mean that the timer stops executing this
+  if (err) {
+    Serial.println("Read failed:");
+    Serial.println(err.str());
+    return true;
+  }
+
+  for (int i = 0; i < 64; i++) {
+    size_t idx = IR_num_reads * 64 + i;
+    IR_READ_BUFFER[idx] = temp2u8(temps[i]);
+  }
+  IR_num_reads++;
+
+  if (IR_num_reads % 10 == 0) {
+    short min_tmp = 10000, max_tmp = 0, sum = 0;
+    int num_above = 0;
+    for (int i = 0; i < 64; i++) {
+      min_tmp = min(temps[i], min_tmp);
+      max_tmp = max(temps[i], max_tmp);
+      sum += temps[i];
+      num_above += temps[i] > HUMAN_TEMP;
+    }
+
+    Serial.printf("min %i, max %i, avg %i, num: %i\n", min_tmp, max_tmp, sum / 64, num_above);
+  }
+  return true;
+}
+
+// convert inval to u8 with zero corresponding to minval
+// and 255 corresponding to maxval and a linear relationship in between
+u8_t temp2u8(u16_t inval) {
+  u16_t out = inval; // [SHORTMIN, SHORTMAX]
+  out = max(out, (u16_t)(IR_AVG_MINVAL * IR_num_reads));
+  out = min(out, (u16_t)(IR_AVG_MAXVAL * IR_num_reads));
+  // [minval, maxval]
+  out -= IR_AVG_MINVAL * IR_num_reads;
+
+  // always multiply first
+  out *= 255;
+  out /= IR_AVG_MAXVAL - IR_AVG_MINVAL;
+  out /= IR_num_reads;
+  // [0; 255], voilá
+  return out;
+}
+
+bool upload(void *arg) {
+  Serial.printf("\nuploading %i reads\n", IR_num_reads);
+
+  byte mintemp = 255;
+  byte maxtemp = 0;
+  u8_t *last_frame = IR_READ_BUFFER + (IR_READS_PER_SD_WRITE - 1) * 64;
+  for (int i = 0; i < 64; i++) {
+    mintemp = min(mintemp, last_frame[i]);
+    maxtemp = max(maxtemp, last_frame[i]);
+  }
+
+  byte message[4] = {
+    error,
+    heltec_battery_percent(),
+    mintemp,
+    maxtemp
+  };
+
+  #if !DBG_NO_LORA
+    RADIOLIB(node->sendReceive(message, sizeof(message)));
+  #endif
+
+  for (u64_t &val : temp_totals)
+    val = 0;
+  IR_num_reads = 0;
+  return true;
+}
+
+void write_SD() {
+  String filename = String(millis()) + ".bin";
+  File file = SD_card.open(filename, FILE_WRITE);
+  if (!file || file.write((char *)IR_READ_BUFFER)) {
+    both.println("SD write or file open failed");
+    error = SENSOR_SD_CARD_WRITE_ERROR;
+    hang();
+  }
+  file.close();
+
+  byte buf[sizeof(IR_READ_BUFFER)];
+  file = SD_card.open(filename, FILE_READ);
+  file.readBytes(buf, sizeof(buf));
+  for (int i = 0; i < sizeof(IR_READ_BUFFER); i++) {
+    assert(IR_READ_BUFFER[i] == buf[i]);
+  }
+  file.close();
 }
