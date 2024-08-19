@@ -3,6 +3,8 @@
 
 #include <Wire.h>
 
+typedef unsigned char byte;
+
 extern const char *AMG8833_error_messages[];
 
 class AMG8833_error_t {

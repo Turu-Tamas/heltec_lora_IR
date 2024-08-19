@@ -37,7 +37,7 @@ const bool DEBUG_LORA_DUTY_CYCLE = false;
 const bool DEBUG_SD = true;
 
 LoRaWANNode* node;
-SDClass SD_card;
+SPIClass SD_SPI;
 
 auto upload_timer = timer_create_default();
 auto IR_read_timer = timer_create_default();
@@ -79,7 +79,9 @@ void setup() {
   delay(6000);
   both.println("start");
 
-  if (!SD_card.begin(SPI_CS1_GPIO_NUM)) {
+  SD_SPI.begin(GPIO_NUM_33, GPIO_NUM_35, GPIO_NUM_34, SPI_CS1_GPIO_NUM);
+
+  if (!SD.begin(SPI_CS1_GPIO_NUM, SD_SPI)) {
     both.println("SD card begin failed");
     error = SENSOR_SD_CARD_SETUP_ERROR;
     hang();
@@ -212,9 +214,10 @@ bool upload(void *arg) {
     maxtemp = max(maxtemp, last_frame[i]);
   }
 
+  byte bat_percent = heltec_battery_percent();
   byte message[4] = {
     error,
-    heltec_battery_percent(),
+    bat_percent,
     mintemp,
     maxtemp
   };
@@ -230,9 +233,9 @@ bool upload(void *arg) {
 }
 
 void write_SD() {
-  String filename = String(millis()) + ".bin";
-  File file = SD_card.open(filename, FILE_WRITE);
-  if (!file || file.write((char *)IR_READ_BUFFER)) {
+  String filename = String("/sd/") + millis() + ".bin";
+  File file = SD.open(filename, FILE_WRITE);
+  if (!file || file.write((byte *)IR_READ_BUFFER, sizeof(IR_READ_BUFFER))) {
     both.println("SD write or file open failed");
     error = SENSOR_SD_CARD_WRITE_ERROR;
     hang();
@@ -241,8 +244,8 @@ void write_SD() {
 
   if (DEBUG_SD) {
     byte buf[sizeof(IR_READ_BUFFER)];
-    file = SD_card.open(filename, FILE_READ);
-    file.readBytes(buf, sizeof(buf));
+    file = SD.open(filename, FILE_READ);
+    file.readBytes((char *)buf, sizeof(buf));
     for (int i = 0; i < sizeof(IR_READ_BUFFER); i++) {
       assert(IR_READ_BUFFER[i] == buf[i]);
     }
